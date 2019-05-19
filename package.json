@@ -2,12 +2,11 @@
   "name": "logs",
   "version": "0.1.0",
   "description": "",
-  "main": "./dist/main.js",
+  "main": "./dist/bundle.js",
   "dependencies": {
-    "@types/d3": "^5.7.2",
     "@types/redom": "^3.12.1",
-    "d3": "^5.9.2",
-    "redom": "^3.20.0"
+    "redom": "^3.20.0",
+    "true-myth": "^3.0.0"
   },
   "devDependencies": {
     "browserify": "^16.2.3",

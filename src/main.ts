@@ -1,14 +1,15 @@
 import { el, list, mount, List } from 'redom';
+import { Maybe } from 'true-myth';
 
-enum Boundary {
+enum BoundChar {
     Bracket = "[",
     Quote = "\"",
     Space = " ",
 }
 
-class BoundIndex {
+class Bound {
     constructor(
-        public boundary: Boundary,
+        public boundary: BoundChar,
         public index: number
     ) {}
 
@@ -20,12 +21,13 @@ class BoundIndex {
                 count++;
             }
         }
+        return count;
     }
 
     closingCharacter(): string {
-        if (this.boundary == Boundary.Bracket) return "]";
-        if (this.boundary == Boundary.Quote) return "\"";
-        if (this.boundary == Boundary.Space) return " ";
+        if (this.boundary == BoundChar.Bracket) return "]";
+        if (this.boundary == BoundChar.Quote) return "\"";
+        if (this.boundary == BoundChar.Space) return " ";
     }
 }
 
@@ -46,12 +48,18 @@ class Line {
         public tags: Map<string, string>,
         public selection: Selection,
     ) {}
+
+    static parse(data: string[]): Line[] {
+        return data.map(datum => new Line(datum, new Map(), null));
+    }
 }
 
 class GroupSelector {
-    select(lines: Line[], row: number, column: number): Selection[] {
-        const bound = this.closestBound(lines[row].text, column);
-        console.log(bound);
+    static findBound(lines: Line[], row: number, column: number): Maybe<Bound> {
+        return this.closestLeftBound(lines[row].text, column);
+    }
+
+    static select(lines: Line[], bound: Bound): Selection[] {
         return lines.map(line => {
             if (!bound) {
                 return new Selection(0, line.text.length - 1);
@@ -60,23 +68,26 @@ class GroupSelector {
         });
     }
 
-    private closestBound(text: string, index: number): BoundIndex | null {
-        for (let boundKey of Object.keys(Boundary)) {
-            const boundary = Boundary[boundKey as any] as Boundary;
-            if (text[index] == boundary) {
-                return new BoundIndex(boundary, this.indexOfBound(text.substring(0, index), boundary));
+    private static closestLeftBound(text: string, index: number): Maybe<Bound> {
+        for (let boundKey of Object.keys(BoundChar)) {
+            const char = BoundChar[boundKey as any] as BoundChar;
+            if (text[index] == char) {
+                return Maybe.of(
+                    new Bound(char, this.indexOfBound(text.substring(0, index), char))
+                );
             }
         }
         if (index > 0) {
-            return this.closestBound(text, index - 1);
+            return this.closestLeftBound(text, index - 1);
         }
+        return Maybe.nothing()
     }
 
-    private indexOfBound(text: string, boundary: Boundary): number {
+    private static indexOfBound(text: string, boundary: BoundChar): number {
         return text.split(boundary).length - 1
     }
 
-    private findSelection(text: string, bound: BoundIndex): Selection {
+    private static findSelection(text: string, bound: Bound): Selection {
         const column = bound.column(text);
         const sub = text.substring(column + 1);
         return new Selection(column + 1, column + sub.indexOf(bound.closingCharacter()));
@@ -122,38 +133,71 @@ class Row {
     }
 }
 
-class Rows {
+class SaveTag {
     el: HTMLElement;
-    rows: List;
-    lines: Line[];
-    selector: GroupSelector;
+    name: HTMLInputElement;
+    submit: HTMLButtonElement;
 
-    constructor(selector: GroupSelector) {
-        this.selector = selector;
-        this.el = el('div', this.rows = list('div.rows', Row));
+    bound: Maybe<Bound>;
+    callback: (name: string, bound: Bound) => void;
 
-        this.el.onclick = e => {
+    constructor(callback: (name: string, bound: Bound) => void) {
+        this.el = el('form#save-tag',
+            this.name = el('input.name', {type: 'text', placeholder: 'Tag Name'}) as HTMLInputElement,
+            this.submit = el('button', {type: 'submit'}, 'Save Tag') as HTMLButtonElement,
+        );
+        this.bound = Maybe.nothing();
+        this.callback = callback;
+
+        this.el.onsubmit = e => {
             e.preventDefault();
-            const target = e.target as HTMLElement;
 
-            if (target.tagName != 'SPAN') {
-                return;
-            }
-
-            const [row, column] = this.findIndex(target);
-            const selections = this.selector.select(this.lines, row, column);
-
-            this.lines.forEach((line, index) => {
-                line.selection = selections[index];
-            })
-
-            this.update(this.lines);
+            this.bound.match({
+                Just: (bound) => {
+                    callback(this.name.value, bound);
+                    this.name.value = '';
+                },
+                Nothing: () => null,
+            });
         }
     }
 
-    update(lines: Line[]) {
+    update(bound: Maybe<Bound>) {
+        this.bound = bound;
+        this.submit.disabled = this.bound.isNothing();
+    }
+}
+
+class App {
+    el: HTMLElement;
+    save: SaveTag;
+    rows: List;
+
+    lines: Line[];
+    bound: Maybe<Bound>;
+
+    constructor() {
+        this.el = el('div',
+            this.save = new SaveTag((name, bound) => this.addTag(name, bound)),
+            this.rows = list('div.rows', Row)
+        );
+        this.lines = [];
+        this.bound = Maybe.nothing();
+
+        this.rows.el.onclick = e => {
+            e.preventDefault();
+
+            const target = e.target as HTMLElement;
+            if (target.tagName != 'SPAN') return;
+            this.selectAtChar(target);
+        }
+    }
+
+    update({lines, bound}: {lines: Line[], bound: Maybe<Bound>}) {
+        this.bound = bound;
         this.lines = lines;
-        this.rows.update(lines);
+        this.save.update(this.bound);
+        this.rows.update(this.lines);
     }
 
     private findIndex(char: HTMLElement) {
@@ -163,9 +207,35 @@ class Rows {
             Array.from(row.querySelector('.text').children).indexOf(char),
         ];
     }
+
+    private selectAtChar(span: HTMLElement) {
+        const [row, column] = this.findIndex(span);
+
+        GroupSelector.findBound(this.lines, row, column).match({
+            Just: (bound) => {
+                const selections = GroupSelector.select(this.lines, bound);
+                this.lines.forEach((line, index) => {
+                    line.selection = selections[index];
+                })
+
+                this.update({lines: this.lines, bound: Maybe.of(bound)});
+            },
+            Nothing: () => null
+        });
+    }
+
+    private addTag(name: string, bound: Bound) {
+        const selections = GroupSelector.select(this.lines, bound);
+        this.lines.forEach((line, index) => {
+            const selection = selections[index];
+            line.tags.set(name, line.text.substring(selection.start, selection.stop + 1));
+        });
+
+        this.update({lines: this.lines, bound: Maybe.nothing()});
+    }
 }
 
-const rows = new Rows(new GroupSelector());
+const app = new App();
 
 const data = [
     '109.169.248.247 - - [12/Dec/2015:18:25:11 +0100] "GET /administrator/ HTTP/1.1" 200 4263 "-" "Mozilla/5.0 (Windows NT 6.0; rv:34.0) Gecko/20100101 Firefox/34.0" "-"',
@@ -178,17 +248,6 @@ const data = [
     '95.29.198.15 - - [12/Dec/2015:18:32:11 +0100] "POST /administrator/index.php HTTP/1.1" 200 4494 "http://google.ca/" "Mozilla/5.0 (Windows NT 6.0; rv:34.0) Gecko/20100101 Firefox/34.0" "-"',
 ];
 
-function parse(data: string[]): Line[] {
-    return data.map(datum => {
-        const splits = datum.split(' ');
-        return new Line(datum, new Map([
-            ['ip', splits[0]]
-        ]), null);
-    });
-}
+app.update({lines: Line.parse(data), bound: Maybe.nothing()});
 
-rows.update(parse(data));
-
-mount(document.getElementById('root'), rows);
-
-console.log(parse(data));
+mount(document.getElementById('root'), app);

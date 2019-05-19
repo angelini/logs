@@ -1,7 +1,8 @@
 {
     "compilerOptions": {
         "noImplicitAny": true,
-        "target": "esnext"
+        "target": "esnext",
+        "module": "commonjs"
     },
     "files": [
         "src/main.ts"
